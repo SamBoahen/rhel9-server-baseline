@@ -54,6 +54,7 @@ SystemMaxUse=  1000M
 sudo journalctl --list-boots
 IDX BOOT ID                          FIRST ENTRY                  LAST ENTRY             >
   0 81ea564c31114a2ca883c549c188cf50 Tue 2026-07-21 14:11:06 CEST Tue 2026-07-21 21:01:43
+  -1 295cfa6902a4481ab8b36e5d4174a591 Tue 2026-07-21 21:10:04 CEST Tue 2026-07-21 21:24:55>
 
 
 ## What went wrong
@@ -61,3 +62,5 @@ IDX BOOT ID                          FIRST ENTRY                  LAST ENTRY    
 --list-boots currently shows only one boot (IDX 0), because the VM has not
 been rebooted since persistent storage was configured. This is not proof
 of failure — it is simply proof there is only one boot to list yet. 
+
+re-edited it after booting the system
