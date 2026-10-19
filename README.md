@@ -31,7 +31,7 @@ permission bits were inspected directly ([Stage 8](docs/08-local-repo.md)).
 
 All 8 Stages Complete.
 
-## Verifing
+## Verifying
 
     ./scripts/verify.sh
 
