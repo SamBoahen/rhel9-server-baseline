@@ -27,7 +27,7 @@ fi
 if [ "$(getenforce)" = "Enforcing" ]; then
     echo "PASS: SELinux is enforcing"
 else
-    echo "FAIL: SELinux is enforcing"
+    echo "FAIL: SELinux is not enforcing"
 fi
 
 
@@ -35,7 +35,7 @@ fi
 if mountpoint -q /srv/web; then
     echo "PASS: /srv/web is mounted"
 else
-    echo "FAIL: /srv/web is mounted"
+    echo "FAIL: /srv/web is not mounted"
 fi
 
 ### Task 06
@@ -51,7 +51,7 @@ fi
 if [ -d /var/log/journal ]; then
     echo "PASS: persistent journal directory exists"
 else
-    echo "FAIL: persistent journal directory exists"
+    echo "FAIL: persistent journal is not directory exists"
 fi
 
 
