@@ -1,10 +1,11 @@
 # RHEL 9 Server Baseline
 
+**RHCSA certified (October 2026)**
+
 A documented, security-hardened RHEL 9 server build, created as hands-on
-practice while preparing for the RHCSA (EX200) exam. Every stage below
-includes the commands used, the reasoning behind each choice, and — where
-relevant — a genuine incident that came up during the build and how it was
-diagnosed and fixed.
+practice while I was preparing for the RHCSA (EX200) exam. Every stage below 
+includes the commands used, the reasoning behind each choice, and, where relevant, 
+a genuine incident that came up during the build and how it was diagnosed and fixed.
 
 Several stages surfaced real problems worth reading on their own:
 SSH was hardened in the wrong direction on the first attempt and had to be
