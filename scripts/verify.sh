@@ -18,3 +18,11 @@ total="$((total + 1 ))"
 
 
 echo "Result: $passed/$total checks passed"
+
+if [ "$passed" -eq "$total" ]; then 
+	exit 0 
+else 
+	exit 1
+fi
+
+
