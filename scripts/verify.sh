@@ -26,6 +26,8 @@ check () {
 
 # Stage 1
 check "user sysadmin exists" id sysadmin
+echo "Result: $passed/$total checks passed"
+
 if [ "$passed" -eq "$total" ]; then
 	exit 0
 else 
