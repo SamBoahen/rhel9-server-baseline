@@ -43,6 +43,8 @@ check "user sysadmin has UID 3001" sysadmin_uid_ok
 check "group admins has GID 3000" admins_gid_ok
 check "user sysadmin is in group admins" sysadmin_in_admins
 check "user webapp has no login shell" webapp_nologin
+check "sudoers files are valid" visudo -c
+check "group admins has a sudo rule" grep -rqs '^%admins' /etc/sudoers.d/
 
 echo "Result: $passed/$total checks passed"
 
