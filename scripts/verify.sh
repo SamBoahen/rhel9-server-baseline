@@ -26,7 +26,7 @@ check () {
 
 sysadmin_uid_ok() { id --user sysadmin | grep -qx 3001; }
 
-admins_gid_ok() { getent group sysadmin  | awk -F: '{ print $3 }' | grep -qx 3000; }
+admins_gid_ok() { getent group admins | awk -F: '{ print $3 }' | grep -qx 3000; }
 
 # Stage 1
 check "user sysadmin exists" id sysadmin
