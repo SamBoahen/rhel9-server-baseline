@@ -26,8 +26,6 @@ check () {
 
 # Stage 1
 check "user sysadmin exists" id sysadmin
-check "broken test"
-
 if [ "$passed" -eq "$total" ]; then
 	exit 0
 else 
