@@ -4,6 +4,12 @@ set -euo pipefail
 total="0"
 passed="0"
 
+if [ "$EUID" -ne 0 ]; then 
+	echo "$0 must be run as root (try: sudo ./scripts/verify.sh)"
+	exit 1
+fi
+
+
 check () { 
 	label="$1"
 	shift
@@ -39,7 +45,6 @@ check "user sysadmin is in group admins" sysadmin_in_admins
 check "user webapp has no login shell" webapp_nologin
 
 echo "Result: $passed/$total checks passed"
-
 
 if [ "$passed" -eq "$total" ]; then
 	exit 0
