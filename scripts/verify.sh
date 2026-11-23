@@ -42,6 +42,10 @@ ssh_root_login_denied() { sshd -T | grep -qx 'permitrootlogin no'; }
 ssh_password_auth_off() { sshd -T | grep -qx 'passwordauthentication no'; }
 ssh_only_admins()       { sshd -T | grep -qx 'allowgroups admins'; }
 
+### Stage 3
+fw_8080_open()       { firewall-cmd --permanent --list-ports | grep -qw 8080/tcp; }
+fw_cockpit_removed() { ! firewall-cmd --permanent --list-services | grep -qw cockpit; }
+
 # Stage 1
 check "user sysadmin exists" id sysadmin
 check "user sysadmin has UID 3001" sysadmin_uid_ok
@@ -55,6 +59,10 @@ check "group admins has a sudo rule" grep -rqs '^%admins' /etc/sudoers.d/
 check "ssh root login is denied" ssh_root_login_denied
 check "ssh password authentication is off" ssh_password_auth_off
 check "ssh only allows group admins" ssh_only_admins
+
+# Stage 3
+check "firewall allows 8080/tcp permanently" fw_8080_open
+check "firewall no longer allows cockpit" fw_cockpit_removed
 
 echo "Result: $passed/$total checks passed"
 
