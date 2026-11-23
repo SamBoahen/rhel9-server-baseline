@@ -37,6 +37,11 @@ admins_gid_ok() { getent group admins | awk -F: '{ print $3 }' | grep -qx 3000; 
 sysadmin_in_admins () { id -nG sysadmin  | grep -qw admins ; }
 webapp_nologin () { getent passwd webapp | awk -F: '$NF == "/sbin/nologin" { print $NF }' | grep -qx /sbin/nologin ; } 
 
+###Stage 2 functions
+ssh_root_login_denied() { sshd -T | grep -qx 'permitrootlogin no'; }
+ssh_password_auth_off() { sshd -T | grep -qx 'passwordauthentication no'; }
+ssh_only_admins()       { sshd -T | grep -qx 'allowgroups admins'; }
+
 # Stage 1
 check "user sysadmin exists" id sysadmin
 check "user sysadmin has UID 3001" sysadmin_uid_ok
@@ -45,6 +50,11 @@ check "user sysadmin is in group admins" sysadmin_in_admins
 check "user webapp has no login shell" webapp_nologin
 check "sudoers files are valid" visudo -c
 check "group admins has a sudo rule" grep -rqs '^%admins' /etc/sudoers.d/
+
+# Stage 2
+check "ssh root login is denied" ssh_root_login_denied
+check "ssh password authentication is off" ssh_password_auth_off
+check "ssh only allows group admins" ssh_only_admins
 
 echo "Result: $passed/$total checks passed"
 
