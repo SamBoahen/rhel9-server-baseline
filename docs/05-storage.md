@@ -1,93 +1,95 @@
 # 05 — Storage
 
-## What was configured
-In this stage I built a dedicated logical volume for the web content that
-the container in Stage 6 will serve. I created a partition, turned it into
-a physical volume, created a volume group on it, and then a logical volume.
-I refreshed the partition table with partprobe, because the kernel sometimes
-does not load a newly created partition on its own. I formatted the LV as
-XFS with the label "webdata" and mounted it persistently at /srv/web using
-that label in /etc/fstab. Finally — the most important step — I re-ran
-restorecon on /srv/web, because mounting a fresh filesystem over the
-directory hides the old labeled directory and presents a new, unlabeled one.
+## Goal
+
+- Volume group `vg_web` with a physical extent size of 8 MiB
+- Logical volume `lv_web`: 50 extents (400 MiB), XFS, label `WEBDATA`, mounted at `/srv/web` at boot by its label
+- Logical volume `lv_swap`: 512 MiB, active as swap at boot
+- `/srv/web` keeps the SELinux label from Stage 4
 
 ## Commands
 
-### Checking all disks
+### Partition the disk
+
+```bash
 lsblk
+sudo gdisk /dev/nvme0n3        # n, default start, +2G, type 8300, w
+sudo partprobe /dev/nvme0n3
+```
 
-### Creating a partition
-sudo gdisk /dev/nvme0n2
+### LVM
 
-### Refreshing the partition table
-sudo partprobe /dev/nvme0n2
+```bash
+sudo pvcreate /dev/nvme0n3p1
+sudo vgcreate -s 8M vg_web /dev/nvme0n3p1
+sudo lvcreate -l 50 -n lv_web vg_web
+sudo lvcreate -L 512M -n lv_swap vg_web
+```
 
-### Creating the PV
-sudo pvcreate /dev/nvme0n2p1
-sudo pvdisplay /dev/nvme0n2p1
+### Filesystem and swap
 
-### Creating the VG
-sudo vgcreate -s 100 webvg /dev/nvme0n2p1
-sudo vgdisplay webvg
+```bash
+sudo mkfs.xfs -L WEBDATA /dev/vg_web/lv_web
+sudo mkswap /dev/vg_web/lv_swap
+```
 
-### Creating the LV
-sudo lvcreate -l 10 -n weblv webvg
-sudo lvdisplay /dev/webvg/weblv
+### Persistent mounts (`/etc/fstab`)
 
-### Formatting the LV with a label
-sudo mkfs.xfs -L webdata /dev/webvg/weblv
+```
+LABEL=WEBDATA          /srv/web  xfs   defaults  0 0
+/dev/vg_web/lv_swap    none      swap  defaults  0 0
+```
 
-### Mounting the LV
-sudo mount -t xfs /dev/webvg/weblv /srv/web/
-
-### Making the mount permanent, by label
-sudo vim /etc/fstab
-    LABEL=webdata   /srv/web   xfs   defaults   0 2
-
-### Reloading and testing the fstab entry
+```bash
 sudo systemctl daemon-reload
 sudo mount -a
+sudo swapon -a
+```
 
-### Relabeling /srv/web after the mount
-sudo restorecon -Rv /srv/web/
+### Restore the SELinux label
+
+```bash
+sudo restorecon -Rv /srv/web
+```
 
 ## Why these choices
-I used LVM instead of a bare partition because a logical volume can be
-extended later without rebuilding anything — if the web content outgrows
-1 GB, one lvextend fixes it.
 
-I mounted by label instead of by device path because device names like
-/dev/nvme0n2p1 can change; a label follows the filesystem itself.
+- **Mount by label:** device names like `nvme0n3` can change between boots or when disks are added; a filesystem label stays with the filesystem.
+- **Swap by LV path:** `/dev/vg_web/lv_swap` is stable, and unlike a UUID it doesn't change if the swap area is recreated.
+- **`mount -a` before rebooting:** a broken fstab line shows up immediately instead of stopping the next boot.
+- **`restorecon` after mounting:** a new filesystem mounted over `/srv/web` hides the labelled directory underneath and starts out unlabelled (`unlabeled_t`). The Stage 4 rule only takes effect once `restorecon` applies it.
 
-The restorecon at the end is required because /srv/web already carried its
-SELinux label from Stage 4 — but mounting a fresh filesystem over the
-directory hides the old directory and presents a brand-new, unlabeled root.
-The relabel output proves it: the new filesystem root was unlabeled_t until
-restorecon applied the httpd_sys_content_t rule from Stage 4.
+## Incidents
+
+- **Raw `blkid` output in fstab:** piping `blkid` into `tee -a /etc/fstab` added lines like `/dev/vg_web/lv_web: LABEL="WEBDATA" ...`, which isn't fstab format and could stop the boot. Removed and replaced with proper entries.
+- **Swap UUID changed:** running `mkswap` a second time created a new UUID, so an fstab entry with the old UUID would have pointed at nothing. Switched to the LV path.
+- **Quoted label:** `LABEL="WEBDATA"` mounts fine, but didn't match the expected fstab entry in `verify.sh`. Changed to the usual unquoted form.
+- **Stale LVM device entry:** an earlier `pvcreate` on the whole disk left `/dev/nvme0n3` in LVM's devices file, next to the partition actually used. Removed with `lvmdevices --deldev /dev/nvme0n3`.
 
 ## Verification
-sudo mount -a
-(silent — no errors)
 
-lsblk
-nvme0n2         259:4    0    20G  0 disk
-└─nvme0n2p1     259:7    0     2G  0 part
-  └─webvg-weblv 253:4    0  1000M  0 lvm  /srv/web
+After a reboot:
 
-sudo cat /etc/fstab | grep webdata
-LABEL=webdata         /srv/web                xfs     defaults        0 2
+```
+$ findmnt /srv/web
+TARGET   SOURCE                    FSTYPE
+/srv/web /dev/mapper/vg_web-lv_web xfs
 
-sudo restorecon -Rv /srv/web/
-Relabeled /srv/web from system_u:object_r:unlabeled_t:s0
-                     to system_u:object_r:httpd_sys_content_t:s0
+$ ls -ldZ /srv/web
+... system_u:object_r:container_file_t:s0 ... /srv/web
+```
 
-## What went wrong
-I ran vgcreate with -s 100, thinking of it as a small tuning value but a bare number is read as MiB, so I created a volume group with a physical
-extent size of 100 MiB (vgdisplay showed only 20 total extents).Nothing
-broke, but it means the smallest possible resize step on this VG is now
-100 MiB.
- 
-Lesson: only use -s when a specific PE size is actually required;
+```
+$ sudo ./scripts/verify.sh
+...
+PASS: /srv/web is mounted
+PASS: lv_web has filesystem label WEBDATA
+PASS: fstab mounts /srv/web by label
+Result: 17/17 checks passed
+```
 
-I also lost a minute searching the fstab with `grep /Srv` — capital S — and
-finding nothing. Case sensitivity.
+## Changes from v1
+
+- Names changed to `vg_web` / `lv_web`, and the label to `WEBDATA`
+- Extent size set to 8 MiB, with a 50-extent LV
+- Added a swap LV

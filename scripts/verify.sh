@@ -30,25 +30,30 @@ check () {
  	fi
 }
 
-sysadmin_uid_ok() { id --user sysadmin | grep -qx 3001; }
+sysadmin_uid_ok() { id --user sysadmin | grep -x 3001; }
 
-admins_gid_ok() { getent group admins | awk -F: '{ print $3 }' | grep -qx 3000; }
+admins_gid_ok() { getent group admins | awk -F: '{ print $3 }' | grep -x 3000; }
 
-sysadmin_in_admins () { id -nG sysadmin  | grep -qw admins ; }
-webapp_nologin () { getent passwd webapp | awk -F: '$NF == "/sbin/nologin" { print $NF }' | grep -qx /sbin/nologin ; } 
+sysadmin_in_admins () { id -nG sysadmin  | grep -w admins ; }
+webapp_nologin () { getent passwd webapp | awk -F: '$NF == "/sbin/nologin" { print $NF }' | grep -x /sbin/nologin ; } 
 
 ### Stage 2 functions
-ssh_root_login_denied() { sshd -T | grep -qx 'permitrootlogin no'; }
-ssh_password_auth_off() { sshd -T | grep -qx 'passwordauthentication no'; }
-ssh_only_admins()       { sshd -T | grep -qx 'allowgroups admins'; }
+ssh_root_login_denied() { sshd -T | grep -x 'permitrootlogin no'; }
+ssh_password_auth_off() { sshd -T | grep -x 'passwordauthentication no'; }
+ssh_only_admins()       { sshd -T | grep -x 'allowgroups admins'; }
 
 ### Stage 3
-fw_8080_open()       { firewall-cmd --permanent --list-ports | grep -qw 8080/tcp; }
-fw_cockpit_removed() { ! firewall-cmd --permanent --list-services | grep -qw cockpit; }
+fw_8080_open()       { firewall-cmd --permanent --list-ports | grep -w 8080/tcp; }
+fw_cockpit_removed() { ! firewall-cmd --permanent --list-services | grep -w cockpit; }
 
 ### Stage 4 
 selinux_enforcing_config () { grep -qx 'SELINUX=enforcing' /etc/selinux/config ; }
 web_fcontext_rule () { semanage fcontext -l -C | grep "/srv/web" ; }
+
+### Stage 5
+web_mounted()        { mountpoint -q /srv/web; }
+web_label_ok()       { blkid -s LABEL -o value /dev/vg_web/lv_web | grep -x WEBDATA; }
+fstab_uses_label()   { awk '$2 == "/srv/web" { print $1 }' /etc/fstab | grep -x LABEL=WEBDATA; }
 
 # Stage 1
 check "user sysadmin exists" id sysadmin
@@ -73,7 +78,10 @@ check "selinux is enforcing" selinux_enforcing_config
 check "selinux labels /srv/web as container_file_t" web_fcontext_rule
 
 
-
+# Stage 5
+check "/srv/web is mounted" web_mounted
+check "lv_web has filesystem label WEBDATA" web_label_ok
+check "fstab mounts /srv/web by label" fstab_uses_label
 
 
 
