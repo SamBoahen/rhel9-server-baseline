@@ -55,6 +55,9 @@ web_mounted()        { mountpoint -q /srv/web; }
 web_label_ok()       { blkid -s LABEL -o value /dev/vg_web/lv_web | grep -x WEBDATA; }
 fstab_uses_label()   { awk '$2 == "/srv/web" { print $1 }' /etc/fstab | grep -x LABEL=WEBDATA; }
 
+### Stage 6
+web_page_ok() { curl -s http://localhost:8080 | grep -x 'rhel9-server-baseline v2'; }
+
 # Stage 1
 check "user sysadmin exists" id sysadmin
 check "user sysadmin has UID 3001" sysadmin_uid_ok
@@ -83,7 +86,9 @@ check "/srv/web is mounted" web_mounted
 check "lv_web has filesystem label WEBDATA" web_label_ok
 check "fstab mounts /srv/web by label" fstab_uses_label
 
-
+# Stage 6
+check "webapp lingering is enabled" test -f /var/lib/systemd/linger/webapp
+check "port 8080 serves the v2 page" web_page_ok
 
 echo "Result: $passed/$total checks passed"
 

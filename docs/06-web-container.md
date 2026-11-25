@@ -1,100 +1,111 @@
-# 06 — Web Container
+# 06 — Rootless Web Container
 
-## What was configured
-A rootless httpd container, running as the websvc service account created
-in Stage 1, serving static content from the /srv/web volume created in
-Stage 5. The container is configured to start automatically as a systemd
-user service under websvc, surviving both logout and reboot.
+## Goal
+
+- `/srv/web/html` is owned by `webapp` and contains `index.html` with `rhel9-server-baseline v2`
+- A rootless container `webserver` runs as `webapp`, from `registry.access.redhat.com/ubi9/httpd-24`
+- Host port 8080 maps to container port 8080
+- `/srv/web/html` is mounted into the container at `/var/www/html`, read-only
+- The container starts at boot without anyone logging in
 
 ## Commands
 
-### Give websvc a proper session (nologin accounts need this — see What went wrong)
-sudo machinectl shell websvc@ /bin/bash
+### Prepare the service account (as an admin)
 
-### Fix ownership so websvc can relabel the volume with :Z
-sudo chown -R websvc:websvc /srv/web
+```bash
+cat /etc/subuid
+sudo usermod --add-subuids 231072-296607 --add-subgids 231072-296607 webapp
+sudo loginctl enable-linger webapp
+```
 
-### Give websvc a subuid/subgid range (system accounts don't get one by default)
-sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 websvc
-podman system migrate
+`webapp` is a system account (Stage 1), and system accounts don't get sub-UID ranges automatically. The range starts right after the last one in `/etc/subuid`, so nothing overlaps.
 
-### Pull the image and run the container (inside the websvc session)
-podman pull docker.io/library/httpd
-podman inspect httpd | grep -i workingdir
-podman run -d --name websvc-httpd -p 8080:80 -v /srv/web:/usr/local/apache2/htdocs:Z httpd
+### Content
 
-### Enable it as a systemd user service, surviving logout and reboot
-loginctl enable-linger websvc
-mkdir -p /home/websvc/.config/systemd/user
-cd /home/websvc/.config/systemd/user
-podman generate systemd --name websvc-httpd --files --new
+```bash
+sudo mkdir -p /srv/web/html
+echo 'rhel9-server-baseline v2' | sudo tee /srv/web/html/index.html
+sudo chown -R webapp:webapp /srv/web/html
+ls -lZ /srv/web/html
+```
+
+The `container_file_t` label comes from the Stage 4 rule.
+
+### Open a real session as webapp
+
+```bash
+sudo dnf install -y systemd-container
+sudo machinectl shell webapp@ /bin/bash
+```
+
+`webapp` has no login shell, so `su - webapp` doesn't work. `machinectl shell` starts a full systemd session, which sets `XDG_RUNTIME_DIR` and the user's systemd instance that rootless podman needs.
+
+### Test run (as webapp)
+
+```bash
+podman run -d --name webserver -p 8080:8080 \
+  -v /srv/web/html:/var/www/html:ro \
+  registry.access.redhat.com/ubi9/httpd-24
+curl -s http://localhost:8080
+podman rm -f webserver
+```
+
+### Run as a service with Quadlet (as webapp)
+
+`~/.config/containers/systemd/webserver.container`:
+
+```ini
+[Unit]
+Description=Rootless web server for rhel9-server-baseline
+
+[Container]
+ContainerName=webserver
+Image=registry.access.redhat.com/ubi9/httpd-24
+PublishPort=8080:8080
+Volume=/srv/web/html:/var/www/html:ro
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
 systemctl --user daemon-reload
-systemctl --user enable --now container-websvc-httpd.service
-systemctl --user status container-websvc-httpd.service
-
-### Fix content permissions for the container process (see What went wrong)
-chmod 644 /srv/web/index.html
+systemctl --user start webserver.service
+systemctl --user status webserver.service
+```
 
 ## Why these choices
-The container runs as websvc, not as sysadmin or root, for separation of
-duty: the account that serves web content has no sudo access and cannot
-touch anything outside what it owns.
 
-I used machinectl shell instead of su -s /bin/bash to get into websvc,
-because websvc is a nologin system account. su -s can start a shell without
-setting up a real systemd user session, which left XDG_RUNTIME_DIR missing
-and rootless podman unable to start. machinectl shell goes through
-systemd-logind properly, so the runtime directory podman needs actually
-gets created.
-
-I used loginctl enable-linger websvc so the container keeps running after
-the session ends and after a reboot, the same as the rootless container
-pattern from earlier stages — just applied to a service account instead of
-an interactive user.
+- **Rootless:** inside the container, root maps to `webapp` (UID 985) on the host, and other container UIDs map into webapp's sub-UID range. A container breakout lands in an unprivileged account.
+- **Port 8080:** unprivileged users can't bind ports below 1024.
+- **Read-only volume:** the web server only needs to read the content, so it can't modify it.
+- **Lingering:** lets webapp's user services start at boot without a login session.
+- **Quadlet instead of `podman generate systemd`:** `generate systemd` is deprecated. A Quadlet file is short, describes the container directly, and is turned into a systemd service on `daemon-reload`. No `enable` is needed; the `[Install]` section handles boot.
 
 ## Verification
-podman ps
-CONTAINER ID  IMAGE                           COMMAND           STATUS        PORTS                 NAMES
-af9b8a37bc24  docker.io/library/httpd:latest  httpd-foreground  Up 2 minutes  0.0.0.0:8080->80/tcp  websvc-httpd
 
-systemctl --user status container-websvc-httpd.service
-Active: active (running)
-Loaded: loaded (...container-websvc-httpd.service; enabled; preset: ...)
+```
+$ podman info --format '{{.Host.IDMappings.UIDMap}}'     # as webapp
+[{0 985 1} {1 231072 65536}]
+```
 
-curl http://localhost:8080
-<h1>It works</h1>
+After a reboot, without logging in as webapp:
 
-## What went wrong
-This stage had three real incidents, each with a different root cause.
+```
+$ curl -s http://localhost:8080
+rhel9-server-baseline v2
 
-**1. No subuid/subgid range for websvc.** The first podman pull failed with
-"no subuid ranges found for user websvc" and then a second error unpacking
-the image layers. System accounts created with useradd -r do not get an
-automatic subuid/subgid allocation the way normal interactive users do,
-and rootless podman needs that range to map container UIDs safely. Fixed
-with `usermod --add-subuids/--add-subgids` and `podman system migrate` to
-rebuild podman's storage against the new mapping.
+![The v2 page served by the rootless container](images/stage6-web-page.png)
+$ sudo ./scripts/verify.sh
+...
+PASS: webapp lingering is enabled
+PASS: port 8080 serves the v2 page
+Result: 19/19 checks passed
+```
 
-**2. su -s did not give podman a working session.** Even after fixing the
-subuid range, podman still behaved as if no runtime directory existed.
-websvc is a nologin account, and su -s /bin/bash can drop into a shell
-without going through a full systemd login, so XDG_RUNTIME_DIR was never
-set up. Switching to `machinectl shell websvc@ /bin/bash` — which goes
-through systemd-logind like a real login — fixed it.
+## Changes from v1
 
-**3. A 403 Forbidden with two independent causes.** Once the container was
-running, curl returned 403. I diagnosed this in two separate checks rather
-than guessing:
-   - `ls -Zd /srv/web` showed `container_file_t`, not the `httpd_sys_content_t`
-     I had set in Stage 4. The `:Z` flag on the volume mount relabels the
-     host directory for the container at mount time, which overwrites
-     whatever fcontext rule was there before. This means the Stage 4
-     SELinux labeling work is functionally superseded inside /srv/web —
-     worth stating plainly rather than treating as still active.
-   - `ls -la /srv/web` showed index.html at mode 640 (rw-r-----), inherited
-     from the Stage 1 umask 027 policy on websvc. That mode has no
-     permission at all for "other," which is the bucket the container's
-     internal process falls into. `chmod 644` fixed it.
-   Both had to be checked and ruled in/out separately — the label being
-   "wrong" and the file being unreadable were two different problems that
-   happened to produce the same symptom.
+- Service account renamed from `websvc` to `webapp`
+- v1 hit three problems: missing sub-UID/GID ranges, a broken login session, and an HTTP 403 caused by SELinux labels and permissions together. In v2 each was prevented up front: ranges added before running podman, `machinectl shell` for a real session, and `container_file_t` set in Stage 4.
+- Switched from `podman generate systemd` to Quadlet
+- Content mounted read-only
