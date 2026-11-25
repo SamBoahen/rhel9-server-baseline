@@ -1,79 +1,82 @@
+# 02 — SSH Hardening
+
 *IP addresses partially redacted for security reasons.*
 
-## What was configured
-I configured key-based SSH authentication for the baseline server and then
-hardened its SSH daemon: root login disabled, password authentication
-disabled, and a maximum of 3 authentication attempts per connection.
-The key was generated on my client VM and installed onto the baseline
-server, so that I could log in with the key before disabling passwords.
+## Goal
+
+- `sysadmin` logs in with an ed25519 key
+- Root login over SSH is denied
+- Password authentication is disabled
+- Only members of `admins` may log in over SSH
+- All changes live in a drop-in under `/etc/ssh/sshd_config.d/`; the main `sshd_config` stays unmodified
 
 ## Commands
 
-### On the client VM — generate a key and install it on the server
+### On the client: create a key and install it for sysadmin
+
+```bash
 ssh-keygen -t ed25519
-ssh-copy-id kwame@192.168.134.XXX
+ssh-copy-id sysadmin@192.168.134.XXX
+```
 
-### Test the key login before hardening anything
-ssh kwame@192.168.134.XXX
+### Test the key login BEFORE hardening anything
 
-### On the baseline server — edit the SSH daemon configuration
-sudo vim /etc/ssh/sshd_config
-    PermitRootLogin no
-    MaxAuthTries 3
-    PasswordAuthentication no
+```bash
+ssh sysadmin@192.168.134.XXX
+```
 
-### Test the configuration for errors BEFORE restarting
+### On the server: the drop-in
+
+```bash
+sudo vim /etc/ssh/sshd_config.d/10-hardening.conf
+```
+
+```
+PermitRootLogin no
+PasswordAuthentication no
+AllowGroups admins
+MaxAuthTries 3
+```
+
+### Test, then restart
+
+```bash
 sudo sshd -t
-
-### Restart the service
 sudo systemctl restart sshd
+```
 
 ## Why these choices
-I generated the key and tested it on the server BEFORE editing sshd_config,
-because a wrong SSH configuration can lock me out of the server permanently.
-The key must be tested on the machine being hardened — the public key
-travels from the client to the server, and the server holds it in
-authorized_keys.
-Running `sshd -t` before restarting is the same idea as visudo for sudoers:
-it checks the syntax first, so a broken configuration never goes live.
+
+- **Key first, hardening second:** disabling passwords before a key works locks you out.
+- **A drop-in, not the main file:** package updates may replace `sshd_config`; files in `sshd_config.d/` are left alone, and all custom settings sit in one place.
+- **`sshd -t` before restart:** same idea as `visudo` for sudoers: catch syntax errors before they take effect.
+- **`AllowGroups admins`:** SSH access is granted by group membership, matching the sudo setup from Stage 1.
+- **The file name `10-…`:** for most settings, sshd uses the *first* value it reads, and drop-ins are read in alphabetical order. A low number makes sure these settings win over `50-redhat.conf`.
+
+## Incident: v1 hardening left in the main file
+
+The v1 build had put `PermitRootLogin no` and `PasswordAuthentication no` directly into `/etc/ssh/sshd_config`. For v2 those lines were commented out and moved into the drop-in. With only the main file edited, `verify.sh` showed `password authentication is off` turning FAIL; after adding the drop-in it was back to PASS, which confirmed the drop-in is actually being read.
 
 ## Verification
-sudo cat /etc/ssh/sshd_config | grep -Ei 'PermitRootLogin|MaxAuthTries|PasswordAuthentication'
-PermitRootLogin no
-MaxAuthTries 3
-PasswordAuthentication no
 
-# Key-based login succeeds (from the client):
-ssh kwame@192.168.134.XXX
-Last login: Fri Jul 10 00:53:14 2026
-[kwame@obibinii ~]$
+```
+$ sudo sshd -T | grep -E 'permitrootlogin|passwordauthentication|allowgroups'
+permitrootlogin no
+passwordauthentication no
+allowgroups admins
+```
 
-# Password login is refused (from the client):
-ssh -o PubkeyAuthentication=no kwame@192.168.134.XXX
-kwame@192.168.134.XXX: Permission denied (publickey,gssapi-keyex,gssapi-with-mic)
+```
+$ sudo ./scripts/verify.sh
+...
+PASS: ssh root login is denied
+PASS: ssh password authentication is off
+PASS: ssh only allows group admins
+Result: 10/10 checks passed
+```
 
-sudo systemctl status sshd
-Active: active (running)
+## Changes from v1
 
-## What went wrong
-Two real incidents in this stage:
-
-1. **I hardened the server before its lock had any keys.** I generated the
-key on the server and copied it TO my client — the wrong direction. When I
-then disabled password authentication, nobody could SSH into the server at
-all, because its authorized_keys was empty. I was only saved by being
-logged in at the console. Lesson: the server holds the lock, the client
-holds the key — `ssh-copy-id user@SERVER` runs on the client, pointed at
-the machine being hardened, and the key login must be proven BEFORE
-passwords are disabled.
-
-2. **I overwrote my GitHub SSH key.** When ssh-keygen said the key already
-exists, I answered "y" — which silently replaced the key that GitHub knew
-about, so git push would have failed. I had to register the new public key
-with GitHub. Lesson: when a key already exists, either reuse it or generate
-to a different filename with -f; never overwrite without knowing what the
-old key was registered with.
-
-Also, when testing with `sshd -t` I forgot sudo at first and got
-"Permission denied" — the command reads the SSH host keys, which
-requires root.
+- Settings moved from `sshd_config` into a drop-in
+- Added `AllowGroups admins`
+- Key installed for `sysadmin` instead of the earlier `kwame` account

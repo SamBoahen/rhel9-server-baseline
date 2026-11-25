@@ -1,0 +1,11 @@
+[Unit]
+Description=Rootless web server for rhel9-server-baseline
+
+[Container]
+ContainerName=webserver
+Image=registry.access.redhat.com/ubi9/httpd-24
+PublishPort=8080:8080
+Volume=/srv/web/html:/var/www/html:ro
+
+[Install]
+WantedBy=default.target

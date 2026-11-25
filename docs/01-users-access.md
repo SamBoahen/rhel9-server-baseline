@@ -1,90 +1,122 @@
 # 01 — Users & Access Control
 
+## Goal
 
-## What was configured
-
-I created a user called "sysadmin" with shell "bash" and a comment describing who the person is.
-
-I then created a group called admins. I then proceeded to add "sysadmin to the group admins and later gave the group "admins" sudo privileges via visudo
-
-I needed a service user which i will later to run my podman so i create 1 called websvc with no shell. 
+- Group `admins` with a fixed GID (3000)
+- Admin user `sysadmin` with a fixed UID (3001), member of `admins`
+- Members of `admins` can run any command via sudo, defined in `/etc/sudoers.d/`
+- Service account `webapp` with no interactive login, used later to run the rootless container (Stage 6)
+- Password aging: new users expire after 90 days; `sysadmin` must change password every 60 days
 
 ## Commands
- 
-### creating the user sysadmins
-sudo useradd -c " This is group admin of group admins " -s /bin/bash sysadmin
 
-### creating the group
-sudo groupadd admins 
+### Password aging default (before creating users)
 
-### adding sysadmin to the group admins 
-sudo usermod -aG admins sysadmin
+```bash
+sudo vim /etc/login.defs        # set: PASS_MAX_DAYS   90
+grep ^PASS_MAX_DAYS /etc/login.defs
+```
 
-## giving group admins sudo privileges
+`login.defs` only applies to users created *after* the change, so this comes first.
+
+### Group
+
+```bash
+sudo groupadd -g 3000 admins
+```
+
+### Admin user
+
+```bash
+sudo useradd -u 3001 -G admins sysadmin
+sudo passwd sysadmin
+sudo chage -M 60 sysadmin
+sudo chage -l sysadmin
+```
+
+Creating the group first lets `useradd -G` add the membership in one step.
+
+### Service account
+
+```bash
+sudo useradd -r -m -s /sbin/nologin webapp
+```
+
+- `-r` creates a system account (UID below 1000)
+- `-m` still creates a home directory, which the rootless container needs in Stage 6
+- `-s /sbin/nologin` blocks interactive logins
+
+### Sudo rule
+
+```bash
 sudo visudo -f /etc/sudoers.d/admins
+```
 
+Contents:
+
+```
 %admins ALL=(ALL) ALL
+```
 
-## creating system user 
-sudo useradd -r -s /bin/nologin -m -d /home/websvc websvc
+`%` marks a group rather than a user.
 
-### setting default permissions for websvc
-echo "umask 027" | sudo tee -a /home/websvc/.bashrc
+## Incident: wrong permissions on the sudoers drop-in
 
+After creating the file with `visudo -f`, `verify.sh` reported:
+
+```
+FAIL: sudoers files are valid
+```
+
+The file had been created as `0640`:
+
+```
+-rw-r-----. 1 root root 22 Nov 21 23:31 /etc/sudoers.d/admins
+```
+
+`visudo -c` rejects sudoers files that aren't `0440`, because files in
+`/etc/sudoers.d/` grant root-level access and must be read-only.
+
+Fix:
+
+```bash
+sudo chmod 0440 /etc/sudoers.d/admins
+sudo visudo -c
+```
+
+The same check also found an older drop-in from the original VM setup
+(`/etc/sudoers.d/obibiniitakyi`) with the same problem, fixed the same way.
 
 ## Why these choices
-Using visudo /etc/sudoers.d is the best practice because it prevents you from getting lock out if there is a syntax error in the file. 
 
-A system user was the best solution for me to use for my podman later. i didnt want to use my user or the sysadmin.
-
-sudo su -s /bin/bash - websvc        
-touch testfile && ls -l testfile  
-
-is a tricky way to login as service user websvc; websvc has no interactive shell   
-
-adding "-r creates a system account (UID below 1000 — websvc got 985), keeping it out of login screens and separate from human users." You made the choice; show the reasoning.
+- **Fixed UID/GID:** consistent IDs across machines make file ownership predictable, for example on shared storage or restored backups.
+- **Drop-in file instead of editing `/etc/sudoers`:** keeps custom rules separate from the vendor file, so package updates never touch them.
+- **`visudo -f` instead of a plain editor:** it checks syntax before saving, so a typo can't lock everyone out of sudo. (It does not guarantee correct permissions, as the incident above shows.)
+- **Group-based sudo:** access is granted by adding someone to `admins`, not by editing sudoers per person.
 
 ## Verification
 
-getent passwd | grep sysadmin
-sysadmin:x:1001:1001: This is group admin of group admins :/home/sysadmin:/bin/bash
-
-getent group | grep admins
-admins:x:1002:
-
-id sysadmin 
-uid=1001(sysadmin) gid=1001(sysadmin) groups=1001(sysadmin),1002(admins)
-
-sudo -l -U sysadmin
-Matching Defaults entries for sysadmin on obibinii:
-    !visiblepw, always_set_home, match_group_by_gid, always_query_group_plugin, env_reset,
-    env_keep="COLORS DISPLAY HOSTNAME HISTSIZE KDEDIR LS_COLORS", env_keep+="MAIL PS1 PS2 QTDIR USERNAME
-    LANG LC_ADDRESS LC_CTYPE", env_keep+="LC_COLLATE LC_IDENTIFICATION LC_MEASUREMENT LC_MESSAGES",
-    env_keep+="LC_MONETARY LC_NAME LC_NUMERIC LC_PAPER LC_TELEPHONE", env_keep+="LC_TIME LC_ALL LANGUAGE
-    LINGUAS _XKB_CHARSET XAUTHORITY", secure_path=/sbin\:/bin\:/usr/sbin\:/usr/bin
-
-User sysadmin may run the following commands on obibinii:
+```
+$ sudo -l -U sysadmin
+User sysadmin may run the following commands on server1:
     (ALL) ALL
+```
 
+```
+$ sudo ./scripts/verify.sh
+PASS: user sysadmin exists
+PASS: user sysadmin has UID 3001
+PASS: group admins has GID 3000
+PASS: user sysadmin is in group admins
+PASS: user webapp has no login shell
+PASS: sudoers files are valid
+PASS: group admins has a sudo rule
+Result: 7/7 checks passed
+```
 
-getent passwd | grep websvc
-websvc:x:985:984::/home/websvc:/bin/nologin
+## Changes from v1
 
-id websvc 
-uid=985(websvc) gid=984(websvc) groups=984(websvc)
-
-sudo chage -l sysadmin
-Last password change					: Jul 10, 2026
-Password expires					: Oct 08, 2026
-Password inactive					: never
-Account expires						: never
-Minimum number of days between password change		: 0
-Maximum number of days between password change		: 90
-Number of days of warning before password expires	: 7
-
-sudo su -s /bin/bash - websvc
-[websvc@obibinii ~]$ touch testfile && ls -l testfile
--rw-r-----. 1 websvc websvc 0 Jul 10 03:23 testfile
-
-## What went wrong 
-Creating a system user was kind of difficult for me because I need it for my podman later on, and i didnt want to use "sudo" in useradd because podman is a rootless daemon; using sudo means it  wouldn't match my needs later on 
+- Service account renamed from `websvc` to `webapp`
+- Fixed the nologin path: v1 used `/bin/nologin`, which doesn't exist on RHEL 9
+- Added fixed UID/GID and password aging
+- Dropped `umask 027` in the service account's `.bashrc`: a `nologin` account never starts an interactive shell, so `.bashrc` is never read
