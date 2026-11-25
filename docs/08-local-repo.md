@@ -1,95 +1,88 @@
 # 08 — Local Repository
 
-## What was configured
-A local DNF repository was configured using the mounted RHEL 9 installation
-ISO as the package source, with both BaseOS and AppStream defined, so that
-packages can be installed without internet access.
+## Goal
+
+- The RHEL 9 installation ISO is mounted read-only at `/mnt/rhel9` at boot
+- Repositories `local-baseos` and `local-appstream` in `/etc/yum.repos.d/local.repo` point to the mounted ISO
+- GPG checking is enabled for both, using the Red Hat release key
+- A package can be installed with only these two repositories enabled
 
 ## Commands
 
-### Mount the ISO with root-accessible permissions
-sudo umount /run/media/kwame/RHEL-9-7-0-BaseOS-x86_64
-sudo mkdir -p /mnt/iso
-sudo mount -o loop,ro /dev/sr1 /mnt/iso
+### Mount the ISO at boot, by label
 
-### Define both repos
-sudo tee /etc/yum.repos.d/local.repo > /dev/null << 'EOF'
+```bash
+sudo mkdir -p /mnt/rhel9
+sudo vim /etc/fstab
+```
+
+```
+LABEL=RHEL-9-7-0-BaseOS-x86_64   /mnt/rhel9   iso9660   ro,nofail   0 0
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo mount -a
+ls /mnt/rhel9
+```
+
+### Define both repositories
+
+`/etc/yum.repos.d/local.repo`:
+
+```ini
 [local-baseos]
-name=Local BaseOS
-baseurl=file:///mnt/iso/BaseOS
+name=RHEL 9 BaseOS (local ISO)
+baseurl=file:///mnt/rhel9/BaseOS
 enabled=1
-gpgcheck=0
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
 
 [local-appstream]
-name=Local AppStream
-baseurl=file:///mnt/iso/AppStream
+name=RHEL 9 AppStream (local ISO)
+baseurl=file:///mnt/rhel9/AppStream
 enabled=1
-gpgcheck=0
-EOF
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+```
 
-### Verify
+### Prove it works with only the local repositories
+
+```bash
 sudo dnf clean all
-sudo dnf repolist
+sudo dnf --disablerepo='*' --enablerepo='local-*' reinstall -y tree
+```
 
-### Prove ( isolation test, subscription repos disabled entirely)
-sudo dnf --disablerepo="*" --enablerepo="local-appstream" install httpd -y
+`reinstall` forces a download from the repository and a signature check, even when the package is already installed.
 
 ## Why these choices
-Both BaseOS and AppStream are configured because RHEL 9 content is split
-across the two  BaseOS holds the core OS, AppStream holds most
-applications (including httpd). Configuring only one leaves half of all
-installable packages unavailable.
 
-gpgcheck=0 is used because packages from a local ISO cannot be verified
-against Red Hat's online signing keys without extra setup; on an exam or
-offline system this is the expected default unless a GPG key is provided.
-
-The repo was pointed at a manually created mount under /mnt/iso instead of
-the desktop's automatic mount under /run/media, because of a real
-permissions problem found while debugging — see What went wrong.
+- **Mount by label:** the CD drive's device name (`/dev/sr1`) can change; the ISO's label stays the same (same idea as Stage 5).
+- **`ro`:** an ISO can't be written to, and the mount makes that explicit.
+- **`nofail`:** if the ISO isn't connected, the boot continues instead of stopping in emergency mode.
+- **`gpgcheck=1`:** every package is checked against Red Hat's signing key, so a tampered or corrupted package is refused.
+- **Two repositories:** on RHEL 9, packages are split between BaseOS (core OS) and AppStream (applications, runtimes). Many installs need both.
 
 ## Verification
-sudo dnf repolist
-repo id                          repo name
-local-appstream                  Local AppStream
-local-baseos                     Local BaseOS
-rhel-9-for-x86_64-appstream-rpms Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)
-rhel-9-for-x86_64-baseos-rpms    Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)
 
-sudo dnf --disablerepo="*" --enablerepo="local-appstream" install httpd -y
-Installing:
- httpd    x86_64    2.4.62-7.el9    local-appstream    46 k
-(...11 packages total, all from local-appstream, dependencies resolved)
-Complete!
+```
+$ findmnt /mnt/rhel9
+TARGET     SOURCE   FSTYPE  OPTIONS
+/mnt/rhel9 /dev/sr1 iso9660 ro,...
+```
 
-## What went wrong
-My first repo file failed to load entirely, with only a generic
-"Warning: failed loading '/etc/yum.repos.d/local.repo', skipping." I
-checked the file with `cat -A` for hidden characters (a real possibility
-after editing on a mobile terminal) — the file was clean, no carriage
-returns, valid syntax.
+```
+$ sudo ./scripts/verify.sh
+...
+PASS: rhel9 iso is mounted at /mnt/rhel9
+PASS: repo local-baseos is enabled
+PASS: repo local-appstream is enabled
+Result: 25/25 checks passed
+```
 
-`dnf repolist -v` gave no further detail, so I checked the mount itself
-that the repo pointed at:
+## Changes from v1
 
-    mount | grep RHEL-9-7-0-BaseOS
-    ... dmode=500,fmode=400,uid=1000,gid=1000 ...
-
-The ISO was auto-mounted by udisks2 under /run/media/kwame with
-dmode=500 (directories: owner-only, r-x------) and fmode=400 (files:
-owner-only, r--------). dnf runs as root, but root was not the owner
-(uid=1000, my user, was)  so root had zero access to even enter the
-directories, let alone read repodata/. This is a sensible default for a
-desktop session browsing their own media, but it silently blocks any
-root-run service from reading the same mount.
-
-The fix was to unmount the auto-mount and manually mount the same device
-at /mnt/iso, which uses normal permissions (root-owned, 0755) instead of
-the restrictive desktop defaults. Repointing the repo file at /mnt/iso
-fixed it immediately.
-
-Lesson: a repo baseurl can be perfectly correct and still fail if the
-underlying mount's permissions block the user actually reading it dnf's
-generic "failed loading" error does not distinguish a syntax problem from
-a permissions problem, so checking the mount options directly was
-necessary to find the real cause.
+- **GPG checking turned on.** v1 used `gpgcheck=0`, which installs packages without verifying their signatures.
+- **The mount is now persistent.** v1 mounted the ISO by hand, so the repositories broke after every reboot. v2 mounts it from fstab, by label, with `nofail`.
+- **No more unmounting the desktop's automount.** v1 had to unmount the GNOME auto-mount under `/run/media`, because its permission bits blocked dnf. v2 mounts the ISO separately at `/mnt/rhel9`, owned by root.
+- Mount point renamed from `/mnt/iso` to `/mnt/rhel9`

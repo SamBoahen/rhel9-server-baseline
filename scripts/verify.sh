@@ -58,6 +58,8 @@ fstab_uses_label()   { awk '$2 == "/srv/web" { print $1 }' /etc/fstab | grep -x 
 ### Stage 6
 web_page_ok() { curl -s http://localhost:8080 | grep -x 'rhel9-server-baseline v2'; }
 
+### Stage 8
+repo_enabled() { dnf repolist --enabled | grep -w "$1"; }
 # Stage 1
 check "user sysadmin exists" id sysadmin
 check "user sysadmin has UID 3001" sysadmin_uid_ok
@@ -94,6 +96,11 @@ check "port 8080 serves the v2 page" web_page_ok
 check "journal is persistent" test -d /var/log/journal
 check "journal size is capped at 1000M" grep -rqs '^SystemMaxUse=1000M' /etc/systemd/journald.conf.d/
 check "errors.log exists" test -f /var/log/errors.log
+
+# Stage 8
+check "rhel9 iso is mounted at /mnt/rhel9" mountpoint -q /mnt/rhel9
+check "repo local-baseos is enabled" repo_enabled local-baseos
+check "repo local-appstream is enabled" repo_enabled local-appstream
 
 echo "Result: $passed/$total checks passed"
 
