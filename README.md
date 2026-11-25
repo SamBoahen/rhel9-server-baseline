@@ -40,6 +40,7 @@ PASS: user sysadmin has UID 3001
 ...
 PASS: repo local-appstream is enabled
 Result: 25/25 checks passed
+![verify.sh: 25/25 checks passed](docs/images/verify-all-pass.png)
 ```
 
 Every check was written **before** its stage was built and confirmed to FAIL
