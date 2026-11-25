@@ -90,6 +90,11 @@ check "fstab mounts /srv/web by label" fstab_uses_label
 check "webapp lingering is enabled" test -f /var/lib/systemd/linger/webapp
 check "port 8080 serves the v2 page" web_page_ok
 
+# Stage 7
+check "journal is persistent" test -d /var/log/journal
+check "journal size is capped at 1000M" grep -rqs '^SystemMaxUse=1000M' /etc/systemd/journald.conf.d/
+check "errors.log exists" test -f /var/log/errors.log
+
 echo "Result: $passed/$total checks passed"
 
 if [ "$passed" -eq "$total" ]; then

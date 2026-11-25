@@ -1,66 +1,96 @@
 # 07 — Logging
 
-## What was configured
-Persistent systemd journal storage was enabled, and a disk-usage cap was
-set so the journal cannot grow unbounded.
+## Goal
+
+- The systemd journal persists across reboots
+- Journal disk usage is capped at 1000M, defined in a drop-in under `/etc/systemd/journald.conf.d/`
+- Messages of priority `err` and higher from all facilities are also written to `/var/log/errors.log`
 
 ## Commands
 
-### Enable persistent storage
-sudo mkdir -p /var/log/journal
-sudo systemctl restart systemd-journald
+### Journal: persistent storage and size cap
 
-### Cap journal disk usage
-sudo vim /etc/systemd/journald.conf
-    SystemMaxUse=1000M
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo vim /etc/systemd/journald.conf.d/50-baseline.conf
+```
+
+```ini
+[Journal]
+Storage=persistent
+SystemMaxUse=1000M
+```
+
+```bash
 sudo systemctl restart systemd-journald
+sudo journalctl --flush
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+```
+
+### Errors to a separate file
+
+```bash
+sudo vim /etc/rsyslog.d/errors.conf
+```
+
+```
+*.err    /var/log/errors.log
+```
+
+```bash
+sudo systemctl restart rsyslog
+logger -p user.err "baseline test error"
+sudo tail -n 3 /var/log/errors.log
+```
+
+`*.err` means every facility, priority `err` and higher.
 
 ## Why these choices
-On boot, journald looks for the directory /var/log/journal. If it does not exist, it stores log data in RAM at /run/log/journal/. Because /run is a temporary file system (tmpfs), all logs are lost on reboot.
-If a service crashes or your system experiences a brute-force attack, journald will write log entries at a massive rate.
-Without explicit caps (SystemMaxUse), the journal will greedily consume gigabytes of storage in minutes or hours.
+
+- **Persistent storage:** without `/var/log/journal`, journald keeps logs in `/run/log/journal`. `/run` is a tmpfs in RAM, so every log is lost at reboot, including the logs explaining *why* the server went down.
+- **A size cap:** a crashing service or a brute-force attack can produce log entries at a huge rate. Without `SystemMaxUse`, the journal can fill the disk.
+- **A drop-in instead of editing `journald.conf`:** custom settings stay separate from the vendor file and survive package updates (same idea as Stages 1 and 2).
+- **A separate errors file:** a quick place to look for problems with plain `tail`/`grep`, without searching the whole journal.
+
+## Incident: restarting journald doesn't create `/var/log/journal`
+
+After setting `Storage=persistent` and restarting journald, `/var/log/journal` still didn't exist. journald only creates it when it **flushes** the in-memory journal to disk, which normally happens at boot. `journalctl --flush` triggered it straight away; journald's own log confirmed both settings:
+
+```
+System Journal (/var/log/journal/...) is 8.0M, max 1000.0M, 992.0M free.
+```
+
+The directory had briefly been created by hand with `mkdir`, giving plain `root:root 755` permissions. `systemd-tmpfiles --create --prefix /var/log/journal` restored the correct group (`systemd-journal`) and ACLs, so members of `wheel`/`adm` can read the journal without sudo.
 
 ## Verification
-sudo systemctl status systemd-journald
-● systemd-journald.service - Journal Service
-     Loaded: loaded (/usr/lib/systemd/system/systemd-journald.service; static)
-     Active: active (running) since Tue 2026-07-21 20:45:13 CEST; 47s ago
-TriggeredBy: ● systemd-journald.socket
-             ● systemd-journald-dev-log.socket
-       Docs: man:systemd-journald.service(8)
-             man:journald.conf(5)
-   Main PID: 14079 (systemd-journal)
-     Status: "Processing requests..."
-      Tasks: 1 (limit: 80639)
-     Memory: 1.6M (peak: 1.9M)
-        CPU: 30ms
-     CGroup: /system.slice/systemd-journald.service
-             └─14079 /usr/lib/systemd/systemd-journald
 
-Jul 21 20:45:13 obibinii systemd-journald[14079]: Journal started
-Jul 21 20:45:13 obibinii systemd-journald[14079]: Runtime Journal (/run/log/journal/d9bab
+After a reboot:
 
+```
+$ journalctl --list-boots
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+ -1 49ab008144df4203b88b5653e060d29f Wed 2026-11-25 09:53:46 CET Wed 2026-11-25 10:22:44 CET
+  0 7117ace7126f4e26aeadfcc134c03cdc Wed 2026-11-25 10:23:58 CET Wed 2026-11-25 10:25:29 CET
+```
 
-sudo journalctl | grep "stage 7 checkpoint"
-Jul 21 20:44:45 obibinii kwame[13943]: rhel9-server-baseline: stage 7 checkpoint
+Two boots listed: the previous boot's logs survived.
 
-journalctl --disk-usage
-Archived and active journals take up 8.0M in the file system.
+```
+$ sudo tail -n 1 /var/log/errors.log
+Nov 25 10:17:02 server1 obibiniitakyi[7523]: baseline test error
+```
 
-sudo cat /etc/systemd/journald.conf | grep -i MaxUse
-SystemMaxUse=  1000M
+```
+$ sudo ./scripts/verify.sh
+...
+PASS: journal is persistent
+PASS: journal size is capped at 1000M
+PASS: errors.log exists
+Result: 22/22 checks passed
+```
 
+## Changes from v1
 
-sudo journalctl --list-boots
-IDX BOOT ID                          FIRST ENTRY                  LAST ENTRY             >
-  0 81ea564c31114a2ca883c549c188cf50 Tue 2026-07-21 14:11:06 CEST Tue 2026-07-21 21:01:43
-  -1 295cfa6902a4481ab8b36e5d4174a591 Tue 2026-07-21 21:10:04 CEST Tue 2026-07-21 21:24:55>
-
-
-## What went wrong
-
---list-boots currently shows only one boot (IDX 0), because the VM has not
-been rebooted since persistent storage was configured. This is not proof
-of failure — it is simply proof there is only one boot to list yet. 
-
-re-edited it after booting the system
+- Settings moved from `journald.conf` into a drop-in
+- `Storage=persistent` set explicitly, instead of relying on the directory existing
+- Added the `errors.log` rule with rsyslog
